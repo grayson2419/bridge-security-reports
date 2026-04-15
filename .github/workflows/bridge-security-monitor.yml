@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - run: pip install duckduckgo-search requests
+      - run: pip install ddgs requests
 
       - name: Run bridge monitor
         env:
