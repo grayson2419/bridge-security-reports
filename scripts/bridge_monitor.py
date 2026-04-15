@@ -1,10 +1,12 @@
-import anthropic
 import os
 import json
 import re
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+
+from google import genai
+from google.genai import types
 
 
 def send_telegram(bot_token: str, chat_id: str, text: str) -> None:
@@ -21,23 +23,17 @@ def send_telegram(bot_token: str, chat_id: str, text: str) -> None:
 
 
 def main() -> None:
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     reports_dir = Path("reports")
     reports_dir.mkdir(exist_ok=True)
 
     existing = {f.stem.lower() for f in reports_dir.glob("*.md")}
 
-    system_prompt = (
-        "You are a Web3 bridge security analyst. "
-        "Be factual and cite sources. "
-        "Always end your response with a JSON block containing structured incident data."
-    )
-
-    user_prompt = f"""Search for cross-chain bridge security incidents from the last 24 hours.
+    prompt = f"""You are a Web3 bridge security analyst. Search for cross-chain bridge security incidents from the last 24 hours and generate analysis reports.
 
 Run these 4 searches:
 1. cross-chain bridge hack exploit drained stolen compromised 2026
@@ -45,13 +41,13 @@ Run these 4 searches:
 3. bridge exploit drained site:x.com OR site:twitter.com
 4. (PeckShield OR BlockSec OR Cyvers OR SlowMist OR CertiK) bridge alert hack 2026
 
-Scope: ALL chains and ALL cross-chain infrastructure — Ethereum, BSC, Solana, Arbitrum, Optimism, Polygon, Avalanche, Base, zkSync, Starknet, Cosmos, Polkadot, Near, Aptos, Sui, TON, Tron, plus OFT adapters (LayerZero), messaging protocols (Wormhole, IBC, Hyperbridge, Axelar), etc.
+Scope: ALL chains — Ethereum, BSC, Solana, Arbitrum, Optimism, Polygon, Avalanche, Base, zkSync, Starknet, Cosmos, Polkadot, Near, Aptos, Sui, TON, Tron, plus OFT adapters (LayerZero), messaging protocols (Wormhole, IBC, Hyperbridge, Axelar), etc.
 
-Date policy: Include incidents with ANY recency signal (recent tweet, article published today/this week, "just happened", tweet IDs suggesting recency). Do NOT skip due to unconfirmed exact date.
+Date policy: Include incidents with ANY recency signal (recent tweet, article this week, "just happened"). Do NOT skip due to unconfirmed exact date.
 
 Already-reported incidents to skip: {sorted(existing)}
 
-For each NEW incident, write a bilingual (Chinese + English) report using this exact format:
+For each NEW incident found, write a bilingual (Chinese + English) report:
 
 # [项目名] 安全事件 | [Project] Security Incident
 
@@ -88,7 +84,7 @@ For each NEW incident, write a bilingual (Chinese + English) report using this e
 
 ---
 
-After all reports, output this JSON block (no incidents = empty array):
+After all reports, output this JSON block (empty array if no new incidents):
 ```json
 [
   {{
@@ -97,39 +93,29 @@ After all reports, output this JSON block (no incidents = empty array):
     "chain": "Chain Name",
     "loss": "$X,XXX,XXX",
     "severity": "Critical",
-    "report_content": "...full markdown..."
+    "report_content": "...full markdown report..."
   }}
 ]
 ```"""
 
     print("Searching for bridge security incidents...")
 
-    messages = [{"role": "user", "content": user_prompt}]
-    response = None
-
-    for _ in range(5):
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=16000,
-            system=system_prompt,
-            tools=[{"type": "web_search_20260209", "name": "web_search"}],
-            messages=messages,
-        )
-        if response.stop_reason != "pause_turn":
-            break
-        messages = [
-            {"role": "user", "content": user_prompt},
-            {"role": "assistant", "content": response.content},
-        ]
-        print("Continuing after pause_turn...")
-
-    full_text = "".join(
-        block.text for block in response.content if block.type == "text"
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            tools=[types.Tool(google_search=types.GoogleSearch())],
+            temperature=0.1,
+        ),
     )
+
+    full_text = response.text
+    print(f"Response received ({len(full_text)} chars)")
 
     json_match = re.search(r"```json\s*(\[.*?\])\s*```", full_text, re.DOTALL)
     if not json_match:
         print("No JSON block found in response")
+        print(f"Preview: {full_text[:300]}")
         return
 
     try:
