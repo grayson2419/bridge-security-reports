@@ -5,8 +5,35 @@ import requests
 from datetime import datetime, timezone
 from pathlib import Path
 
-from google import genai
-from google.genai import types
+from duckduckgo_search import DDGS
+
+
+def search_ddg(query: str, max_results: int = 5) -> list[dict]:
+    try:
+        with DDGS() as ddgs:
+            return list(ddgs.text(query, max_results=max_results))
+    except Exception as e:
+        print(f"Search failed for '{query}': {e}")
+        return []
+
+
+def call_groq(prompt: str, groq_api_key: str) -> str:
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {groq_api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "llama-3.3-70b-versatile",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 8000,
+            "temperature": 0.1,
+        },
+        timeout=120,
+    )
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"]
 
 
 def send_telegram(bot_token: str, chat_id: str, text: str) -> None:
@@ -23,7 +50,7 @@ def send_telegram(bot_token: str, chat_id: str, text: str) -> None:
 
 
 def main() -> None:
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    groq_api_key = os.environ["GROQ_API_KEY"]
     bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
 
@@ -33,21 +60,49 @@ def main() -> None:
 
     existing = {f.stem.lower() for f in reports_dir.glob("*.md")}
 
-    prompt = f"""You are a Web3 bridge security analyst. Search for cross-chain bridge security incidents from the last 24 hours and generate analysis reports.
+    # Search for bridge security incidents
+    queries = [
+        "cross-chain bridge hack exploit drained stolen 2026",
+        "跨链桥 攻击 安全事件 漏洞 被盗 2026",
+        "bridge exploit drained crypto security incident",
+        "PeckShield OR BlockSec OR SlowMist bridge hack alert",
+    ]
 
-Run these 4 searches:
-1. cross-chain bridge hack exploit drained stolen compromised 2026
-2. 跨链桥 攻击 安全事件 漏洞 被盗 被黑 2026
-3. bridge exploit drained site:x.com OR site:twitter.com
-4. (PeckShield OR BlockSec OR Cyvers OR SlowMist OR CertiK) bridge alert hack 2026
+    print("Searching for bridge security incidents...")
+    all_results = []
+    for query in queries:
+        results = search_ddg(query, max_results=5)
+        for r in results:
+            all_results.append({
+                "title": r.get("title", ""),
+                "url": r.get("href", ""),
+                "snippet": r.get("body", ""),
+            })
+        print(f"Query '{query[:40]}...' → {len(results)} results")
 
-Scope: ALL chains — Ethereum, BSC, Solana, Arbitrum, Optimism, Polygon, Avalanche, Base, zkSync, Starknet, Cosmos, Polkadot, Near, Aptos, Sui, TON, Tron, plus OFT adapters (LayerZero), messaging protocols (Wormhole, IBC, Hyperbridge, Axelar), etc.
+    if not all_results:
+        print("No search results found")
+        return
 
-Date policy: Include incidents with ANY recency signal (recent tweet, article this week, "just happened"). Do NOT skip due to unconfirmed exact date.
+    # Format results for analysis
+    results_text = "\n\n".join(
+        f"[{i+1}] {r['title']}\nURL: {r['url']}\n{r['snippet']}"
+        for i, r in enumerate(all_results)
+    )
 
-Already-reported incidents to skip: {sorted(existing)}
+    prompt = f"""You are a Web3 bridge security analyst. Today is {today}.
 
-For each NEW incident found, write a bilingual (Chinese + English) report:
+Analyze these search results and identify cross-chain bridge security incidents from the last 24 hours.
+
+SEARCH RESULTS:
+{results_text}
+
+ALREADY REPORTED (skip these): {sorted(existing)}
+
+INSTRUCTIONS:
+1. Identify NEW bridge/cross-chain security incidents (hacks, exploits, vulnerabilities). Include OFT adapters (LayerZero), messaging protocols (Wormhole, IBC, Hyperbridge, Axelar), etc.
+2. Include incidents with any recency signal. Do NOT skip due to unconfirmed exact date.
+3. For each NEW incident, write a bilingual Chinese+English report in this format:
 
 # [项目名] 安全事件 | [Project] Security Incident
 
@@ -79,12 +134,11 @@ For each NEW incident found, write a bilingual (Chinese + English) report:
 - **[Project 2]**: [相似漏洞 | similar vulnerability] — [建议 | recommendation]
 
 ## 参考 | References
-- [URL1]
-- [URL2]
+- [URL from search results]
 
 ---
 
-After all reports, output this JSON block (empty array if no new incidents):
+After all reports, output this JSON block (empty array [] if no new incidents):
 ```json
 [
   {{
@@ -98,18 +152,8 @@ After all reports, output this JSON block (empty array if no new incidents):
 ]
 ```"""
 
-    print("Searching for bridge security incidents...")
-
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            tools=[types.Tool(google_search=types.GoogleSearch())],
-            temperature=0.1,
-        ),
-    )
-
-    full_text = response.text
+    print("Analyzing with Groq...")
+    full_text = call_groq(prompt, groq_api_key)
     print(f"Response received ({len(full_text)} chars)")
 
     json_match = re.search(r"```json\s*(\[.*?\])\s*```", full_text, re.DOTALL)
