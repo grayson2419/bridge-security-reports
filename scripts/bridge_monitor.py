@@ -5,7 +5,7 @@ import requests
 from datetime import datetime, timezone
 from pathlib import Path
 
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 
 def search_ddg(query: str, max_results: int = 5) -> list[dict]:
