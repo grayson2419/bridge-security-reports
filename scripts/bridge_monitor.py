@@ -92,7 +92,7 @@ def main() -> None:
 
     prompt = f"""You are a Web3 bridge security analyst. Today is {today}.
 
-Analyze these search results and identify cross-chain bridge security incidents from the last 24 hours.
+Analyze these search results and identify cross-chain bridge security incidents from the last 7 days.
 
 SEARCH RESULTS:
 {results_text}
